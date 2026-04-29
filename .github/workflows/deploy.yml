@@ -152,6 +152,12 @@ jobs:
       #   with:
       #     name: dist
 
+      - name: Checkout only pm2 config
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            pm2
+          sparse-checkout-cone-mode: false
       - name: Restore cached Build Artifacts
         id: cache-primes-restore
         uses: actions/cache/restore@v4
