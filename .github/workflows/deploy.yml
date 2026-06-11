@@ -78,6 +78,12 @@ jobs:
 
     outputs:
       sha_short: ${{ steps.sha.outputs.sha_short }}
+      build_result: ${{ steps.build.conclusion }}
+      save_result: ${{ steps.save.conclusion }}
+      scp_result: ${{ steps.scp.conclusion }}
+      deploy_result: ${{ steps.deploy.conclusion }}
+      total_duration: ${{ steps.results.outputs.total_duration }}
+      image_size: ${{ steps.results.outputs.image_size }}
 
     steps:
       - uses: actions/checkout@v4
@@ -94,7 +100,12 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Start timing
+        id: timing
+        run: echo "start_time=$(date +%s)" >> "$GITHUB_OUTPUT"
+
       - name: Build Docker image
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -120,11 +131,13 @@ jobs:
           echo "sha_short=$sha_short" >> "$GITHUB_OUTPUT"
 
       - name: Save image
+        id: save
         run: |
           mkdir -p deploy
           docker save yohaku:latest | gzip > deploy/yohaku-image.tar.gz
 
       - name: Copy image to server
+        id: scp
         uses: appleboy/scp-action@master
         with:
           host: ${{ secrets.HOST }}
@@ -138,6 +151,7 @@ jobs:
           timeout: 10m
 
       - name: Deploy on server
+        id: deploy
         uses: appleboy/ssh-action@master
         with:
           command_timeout: 5m
@@ -173,6 +187,18 @@ jobs:
             docker image prune -f
 
             echo "Deployed yohaku:${{ github.sha }}"
+            docker ps --filter name=yohaku --format "{{.Status}}"
+
+      - name: Compile results
+        id: results
+        if: always()
+        run: |
+          now=$(date +%s)
+          start=${{ steps.timing.outputs.start_time }}
+          echo "total_duration=$((now - start))" >> "$GITHUB_OUTPUT"
+          if [ -f deploy/yohaku-image.tar.gz ]; then
+            echo "image_size=$(du -h deploy/yohaku-image.tar.gz | cut -f1)" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: After deploy script
         run: |
@@ -220,15 +246,23 @@ jobs:
           token: ${{ secrets.GH_PAT }}
           fetch-depth: 1
 
-      - name: Get commit SHA
-        id: sha
-        run: echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Get commit info
+        id: commit
+        run: |
+          echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          git log -1 --pretty=format:'%s' > /tmp/commit_msg.txt
 
       - name: Send PushPlus notification
         env:
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
           DEPLOY_RESULT: ${{ needs.build-and-deploy.result }}
-          SHA_SHORT: ${{ steps.sha.outputs.sha_short }}
+          SHA_SHORT: ${{ steps.commit.outputs.sha_short }}
+          BUILD_RESULT: ${{ needs.build-and-deploy.outputs.build_result }}
+          SAVE_RESULT: ${{ needs.build-and-deploy.outputs.save_result }}
+          SCP_RESULT: ${{ needs.build-and-deploy.outputs.scp_result }}
+          DEPLOY_PHASE_RESULT: ${{ needs.build-and-deploy.outputs.deploy_result }}
+          TOTAL_DURATION: ${{ needs.build-and-deploy.outputs.total_duration }}
+          IMAGE_SIZE: ${{ needs.build-and-deploy.outputs.image_size }}
           TRIGGER_EVENT: ${{ github.event_name }}
           RUN_NUMBER: ${{ github.run_number }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -238,6 +272,7 @@ jobs:
             exit 0
           fi
 
+          # --- Status ---
           if [ "$DEPLOY_RESULT" = "success" ]; then
             STATUS_ICON="✅"
             STATUS_TEXT="成功"
@@ -246,25 +281,71 @@ jobs:
             STATUS_TEXT="失败"
           fi
 
+          # --- Phase icons ---
+          phase_icon() {
+            case "$1" in
+              success) echo "✅" ;;
+              failure) echo "❌" ;;
+              skipped) echo "⏭️" ;;
+              *)       echo "❓" ;;
+            esac
+          }
+
+          BUILD_ICON=$(phase_icon "$BUILD_RESULT")
+          SAVE_ICON=$(phase_icon "$SAVE_RESULT")
+          SCP_ICON=$(phase_icon "$SCP_RESULT")
+          DEPLOY_ICON=$(phase_icon "$DEPLOY_PHASE_RESULT")
+
+          # --- Trigger text ---
           case "$TRIGGER_EVENT" in
-            push) TRIGGER_TEXT="代码推送" ;;
-            schedule) TRIGGER_TEXT="定时触发" ;;
+            push)                TRIGGER_TEXT="代码推送" ;;
+            schedule)            TRIGGER_TEXT="定时触发" ;;
             repository_dispatch) TRIGGER_TEXT="手动触发" ;;
-            *) TRIGGER_TEXT="$TRIGGER_EVENT" ;;
+            *)                   TRIGGER_TEXT="$TRIGGER_EVENT" ;;
           esac
+
+          # --- Duration ---
+          if [ -n "$TOTAL_DURATION" ]; then
+            DURATION_MIN=$((TOTAL_DURATION / 60))
+            DURATION_SEC=$((TOTAL_DURATION % 60))
+            DURATION_TEXT="${DURATION_MIN}m ${DURATION_SEC}s"
+          else
+            DURATION_TEXT="N/A"
+          fi
+
+          # --- Commit message ---
+          COMMIT_MSG=$(cat /tmp/commit_msg.txt 2>/dev/null || echo "N/A")
+
+          # --- Build content ---
+          TIMESTAMP=$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')
+          SIZE_HINT="${IMAGE_SIZE:+（${IMAGE_SIZE}）}"
 
           CONTENT="## Yohaku 部署 ${STATUS_TEXT}
 
+          ### 基本信息
           | 项目 | 内容 |
           |------|------|
           | 状态 | ${STATUS_ICON} ${STATUS_TEXT} |
           | 版本 | \`${SHA_SHORT}\` |
           | 触发方式 | ${TRIGGER_TEXT} |
           | 运行编号 | #${RUN_NUMBER} |
-          | 时间 | $(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S') |
+          | 总用时 | ${DURATION_TEXT} |
+          | 时间 | ${TIMESTAMP} |
+
+          ### 各阶段结果
+          | 阶段 | 结果 |
+          |------|------|
+          | Docker 构建 | ${BUILD_ICON} ${BUILD_RESULT} |
+          | 镜像打包 | ${SAVE_ICON} ${SAVE_RESULT} ${SIZE_HINT} |
+          | 传输到服务器 | ${SCP_ICON} ${SCP_RESULT} |
+          | 部署启动 | ${DEPLOY_ICON} ${DEPLOY_PHASE_RESULT} |
+
+          ### 提交信息
+          > ${COMMIT_MSG}
 
           [查看 GitHub Actions 运行详情](${RUN_URL})"
 
+          # --- Send ---
           PAYLOAD=$(jq -n \
             --arg token "$PUSHPLUS_TOKEN" \
             --arg title "Yohaku 部署 ${STATUS_TEXT}" \
