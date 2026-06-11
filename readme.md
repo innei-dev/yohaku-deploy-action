@@ -10,23 +10,30 @@
 - Next.js build 需要大量内存，很多服务器并吃不消这样的开销，因此利用 GitHub Action 完成构建后推送到服务器。
 - 支持 **Docker** 和 **PM2** 两种部署方式，可根据服务器环境自由选择。
 
-## 部署方式选择
+## 最近变更
 
-本工作流支持两种部署方式，通过 `DEPLOY_METHOD` 环境变量切换：
+- **仓库重命名**：`shiroi-deploy-action` → `yohaku-deploy-action`。
+- **PR #17** 将默认源码仓库从 `innei-dev/shiroi` 修改为 `innei-dev/Yohaku`，以匹配当前主力项目。如果你在部署旧版 Shiroi，请将 `SOURCE_REPO` 改回 `innei-dev/shiroi`。
+- 工作流已通用化：源码仓库、构建命令、产物路径均可通过环境变量覆盖，详见下节「配置项」。
 
-| 方式 | 描述 | 适用场景 |
-|------|------|----------|
-| `docker`（默认） | 构建 Docker 镜像 → SCP 到服务器 → `docker load` + `docker run` | 服务器已安装 Docker，希望容器化运行 |
-| `pm2` | 构建 Next.js standalone → SCP zip → `unzip` + `pm2 restart` | 服务器已安装 Node.js/pm2，无需 Docker |
+## How to
 
-**修改方式：** 在 `.github/workflows/deploy.yml` 的 `env` 段修改 `DEPLOY_METHOD` 值，或在手动运行时通过工作流输入选择。
-
-## 前置准备
+开始之前，根据你选择的部署方式准备服务器环境。
 
 ### 通用（两种方式都需要）
 
-1. 在你的服务器家目录创建 `yohaku` 目录，新建 `.env` 填写环境变量（参考私有仓库中的 `.env.template`）。
-2. Fork 此项目并配置以下 Secrets。
+在你的服务器家目录，新建 `yohaku` 目录，然后新建 `.env` 填写你的变量。
+
+```
+# Env from your private Yohaku repo .env.template
+BASE_URL=
+
+NEXT_PUBLIC_API_URL=
+NEXT_PUBLIC_GATEWAY_URL=
+
+TMDB_API_KEY=
+GH_TOKEN=
+```
 
 ### Docker 方式
 
@@ -58,26 +65,13 @@ npm install -g sharp
 
 PM2 的 ecosystem 配置文件位于本仓库的 `pm2/ecosystem.config.js`，需要在服务器 `~/yohaku/` 目录下放置一份。
 
-设置 pm2 开机自启：
+为了让 PM2 在服务器重启之后能够还原进程：
 ```bash
 pm2 startup
 pm2 save
 ```
 
-## 快速开始
-
-1. Fork 此项目。
-2. 在仓库 **Settings → Secrets and variables → Actions** 中配置以下 Secrets。
-3. 根据需要修改 `.github/workflows/deploy.yml` 中的 `DEPLOY_METHOD`（默认 `docker`）。
-4. 推送到 main 分支触发部署。
-
-### 手动触发
-
-工作流支持 `workflow_dispatch` 手动触发，可在运行时选择部署方式：
-
-```bash
-# 在 GitHub Actions 页面选择 workflow → Run workflow → 选择 docker 或 pm2
-```
+Fork 此项目，然后填写下面的信息。
 
 ## 配置项
 
@@ -87,6 +81,34 @@ pm2 save
 |--------|--------|------|
 | `DEPLOY_METHOD` | `docker` | 部署方式：`docker` 或 `pm2` |
 | `SOURCE_REPO` | `innei-dev/Yohaku` | 私有源码仓库（格式：`owner/repo`） |
+| `BUILD_COMMAND` | `pnpm --filter @yohaku/web build:ci` | 构建命令。workflow 会在构建后自动执行 standalone 打包与 zip；如果你的项目结构不同，可修改此命令 |
+| `STANDALONE_SUBPATH` | `standalone/apps/web` | 构建产物中 standalone 包的相对路径。Yohaku 与旧版 Shiroi 若结构不同，请按需调整 |
+
+如果你部署的是旧版 **Shiroi**（monorepo 结构为 `apps/web`），通常保持默认即可；若你的仓库结构不同（例如单仓库直接输出到 `.next/standalone`），请修改 `STANDALONE_SUBPATH`。
+
+## 部署方式选择
+
+通过 `DEPLOY_METHOD` 环境变量切换：
+
+| 方式 | 描述 | 适用场景 |
+|------|------|----------|
+| `docker`（默认） | 构建 Docker 镜像 → SCP 到服务器 → `docker load` + `docker run` | 服务器已安装 Docker，希望容器化运行 |
+| `pm2` | 构建 Next.js standalone → SCP zip → `unzip` + `pm2 restart` | 服务器已安装 Node.js/pm2，无需 Docker |
+
+**修改方式：** 在 `.github/workflows/deploy.yml` 的 `env` 段修改 `DEPLOY_METHOD` 值，或在手动运行时通过工作流输入选择。
+
+## CI 构建与站点 URL 环境变量
+
+工作流在 GitHub Actions 里执行 `next build` 时，会通过仓库 **Secrets** 注入 `BASE_URL`、`NEXT_PUBLIC_API_URL` 与 `NEXT_PUBLIC_GATEWAY_URL`，须与服务器 `~/yohaku/.env`（及私有仓库 `Dockerfile` / 模板）一致。
+
+- **`BASE_URL`**：站点对外根 URL（无尾部斜杠为宜），例如 `https://mx.innei.in`。与私有镜像构建阶段一致：`Dockerfile` 中常用 `ARG BASE_URL`，并令 `NEXT_PUBLIC_GATEWAY_URL=${BASE_URL}`、`NEXT_PUBLIC_API_URL=${BASE_URL}/api/v3`。
+- **`NEXT_PUBLIC_*`**：直接参与 `next build` 与客户端 bundle；若启用 **ISR**，构建期/再验证会依赖正确端点，不能只依赖部署机 `.env` 而忽略 Actions。
+
+在仓库 **Settings → Secrets and variables → Actions** 中新增：
+
+- `BASE_URL`
+- `NEXT_PUBLIC_API_URL`
+- `NEXT_PUBLIC_GATEWAY_URL`
 
 ## Secrets
 
@@ -104,7 +126,7 @@ pm2 save
 
 | Secret | 说明 |
 |--------|------|
-| `BASE_URL` | 站点对外根 URL，例如 `https://example.com` |
+| `BASE_URL` | 站点对外根 URL，例如 `https://mx.innei.in` |
 | `S3_ACCESS_KEY` | S3 存储密钥 |
 | `S3_SECRET_KEY` | S3 存储密钥 |
 | `WEBHOOK_SECRET` | Webhook 密钥 |
@@ -113,18 +135,10 @@ pm2 save
 
 ### GitHub Token 配置
 
-1. 你的账号可以访问当前私有源码仓库。
-2. 进入 [Personal access tokens](https://github.com/settings/tokens) → Tokens (classic) → Generate new token
-3. 勾选 `repo` 权限。
+1. 你的账号可以访问当前私有源码仓库（Yohaku 或你正在使用的对应私有仓库）。
+2. 进入 [tokens](https://github.com/settings/tokens) - Personal access tokens - Tokens (classic) - Generate new token - Generate new token (classic)
 
-## CI 构建与站点 URL
-
-工作流在 GitHub Actions 里执行构建时，会通过 Secrets 注入构建参数。
-
-- **Docker 方式**：通过 `docker/build-push-action` 的 `build-args` 传入，由 Dockerfile 的 `ENV` 指令写入镜像。
-- **PM2 方式**：通过 `actions/setup-node` 和构建命令执行 `next build`，构建期使用的环境变量在 `.env` 文件中定义。
-
-建议确保服务器 `~/yohaku/.env` 中的变量与构建参数一致。
+![](https://github.com/innei-dev/yohaku-deploy-action/assets/41265413/e55d32cb-bd30-46b7-a603-7d00b3f8a413)
 
 ## Docker 部署流程
 
