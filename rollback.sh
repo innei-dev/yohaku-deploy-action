@@ -1,39 +1,57 @@
 #!/bin/bash
 
-# 用于存放数字文件夹的数组
-folders=()
+# Docker 部署回滚脚本
+# 使用方式:
+#   bash rollback.sh                  # 列出本地镜像存档并交互式选择回滚
+#   bash rollback.sh sha-abc1234      # 直接回滚到指定标签 (从本地存档加载)
+#   bash rollback.sh latest           # 重新加载 latest 并重启
 
-# 遍历当前目录下的文件和文件夹，将数字文件夹加入到数组中
-for dir in *; do
-  if [[ -d "$dir" && "$dir" =~ ^[0-9]+$ ]]; then
-    folders+=("$dir")
-  fi
-done
+set -e
 
-# 数字文件夹按数字从大到小排序
-IFS=$'\n' folders=($(sort -rn <<<"${folders[*]}"))
-unset IFS
+IMAGE_DIR="$HOME/yohaku/images"
 
-# 使用 select 构建一个选择菜单
-echo "请选择一个文件夹进行操作："
-select folder in "${folders[@]}"; do
-  if [ -n "$folder" ]; then
-    echo "您选择了文件夹：$folder"
-    break
-  else
-    echo "无效的选择，请重新选择。"
-  fi
-done
-
-STANDALONE_SUBPATH="${STANDALONE_SUBPATH:-standalone/apps/web}"
-
-# 检查用户所选的文件夹中是否存在 server.js
-if [ -f "$folder/$STANDALONE_SUBPATH/server.js" ]; then
-  # 创建软链接到当前目录的 server.js
-  ln -sf "$folder/$STANDALONE_SUBPATH/server.js" server.js
-  echo "已成功链接 $folder/$STANDALONE_SUBPATH/server.js 到当前目录的 server.js"
-  pm2 reload ecosystem.config.js --update-env
-  echo "Rollback successfully."
+# 如果提供了标签参数，直接使用
+if [ -n "$1" ]; then
+  TAG="$1"
 else
-  echo "错误：所选文件夹中不存在 $STANDALONE_SUBPATH/server.js"
+  echo "本地可用 Yohaku 镜像存档:"
+  ls -1t "$IMAGE_DIR"/yohaku-*.tar.gz 2>/dev/null || {
+    echo "  (无本地存档)"
+    exit 1
+  }
+
+  echo ""
+  read -r -p "输入要回滚到的标签 (例如 sha-abc1234，留空取消): " TAG
+
+  if [ -z "$TAG" ]; then
+    echo "取消回滚"
+    exit 0
+  fi
 fi
+
+ARCHIVE="$IMAGE_DIR/yohaku-$TAG.tar.gz"
+
+if [ ! -f "$ARCHIVE" ]; then
+  echo "错误: 未找到镜像存档 $ARCHIVE"
+  echo "可用存档:"
+  ls -1 "$IMAGE_DIR"/yohaku-*.tar.gz 2>/dev/null | sed 's/.*yohaku-/  /; s/\.tar\.gz//'
+  exit 1
+fi
+
+echo "加载镜像 $TAG ..."
+docker load < "$ARCHIVE"
+
+echo "停止并移除旧容器..."
+docker stop yohaku 2>/dev/null || true
+docker rm yohaku 2>/dev/null || true
+
+echo "启动新容器..."
+docker run -d \
+  --name yohaku \
+  --restart always \
+  -p 2323:2323 \
+  -v "$HOME/yohaku/.env:/app/.env" \
+  yohaku:latest
+
+echo "回滚完成，当前运行: yohaku:$TAG"
+docker ps --filter name=yohaku --format "table {{.Names}}\t{{.Image}}\t{{.Status}}"
