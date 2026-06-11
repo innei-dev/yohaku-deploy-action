@@ -33,10 +33,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Read HASH_FILE content
+      - name: Read HASH_FILE content from hash-track branch
         id: read_hash
         run: |
-          content=$(cat ${{ env.HASH_FILE }}) || true
+          git fetch origin hash-track 2>/dev/null || true
+          content=$(git show origin/hash-track:build_hash 2>/dev/null || echo "")
           echo "hash_content=$content" >> "$GITHUB_OUTPUT"
 
   check:
@@ -260,23 +261,34 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
+      - name: Create or switch to hash-track branch
+        run: |
+          git fetch origin hash-track 2>/dev/null || true
+          if git rev-parse origin/hash-track >/dev/null 2>&1; then
+            git checkout -b hash-track origin/hash-track
+          else
+            git checkout --orphan hash-track
+            git rm -rf .
+          fi
+
       - name: Write hash to file
         env:
           SHA_SHORT: ${{ needs.build-and-deploy.outputs.sha_short }}
         run: echo $SHA_SHORT > ${{ env.HASH_FILE }}
 
-      - name: Commit files
+      - name: Commit and push
+        env:
+          SHA_SHORT: ${{ needs.build-and-deploy.outputs.sha_short }}
         run: |
           git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           git add ${{ env.HASH_FILE }}
-          git commit -a -m "Update hash file"
-
-      - name: Push changes
-        uses: ad-m/github-push-action@master
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          branch: ${{ github.ref }}
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Update hash file to $SHA_SHORT"
+            git push origin hash-track
+          fi
 
   notify:
     name: Send WeChat Notification
