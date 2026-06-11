@@ -125,7 +125,7 @@ Fork 此项目，然后填写下面的信息。
 ## Secrets
 
 | Secret | 说明 |
-|--------|------|
+| --- | --- |
 | `GH_PAT` | 可访问私有源码仓库的 GitHub Token（需 `repo` 权限） |
 | `HOST` | 服务器地址 |
 | `USER` | 服务器 SSH 用户名 |
@@ -133,17 +133,10 @@ Fork 此项目，然后填写下面的信息。
 | `KEY` | 服务器 SSH 私钥（与 PASSWORD 二选一） |
 | `PORT` | 服务器 SSH 端口 |
 | `PUSHPLUS_TOKEN` | （可选）PushPlus 推送通知 Token |
+| `BASE_URL` | 站点对外根 URL |
+| `NEXT_PUBLIC_API_URL` | 公开 API URL |
+| `NEXT_PUBLIC_GATEWAY_URL` | 公开网关 URL |
 
-### Docker 方式额外 Secrets
-
-| Secret | 说明 |
-|--------|------|
-| `BASE_URL` | 站点对外根 URL，例如 `https://mx.innei.in` |
-| `S3_ACCESS_KEY` | S3 存储密钥 |
-| `S3_SECRET_KEY` | S3 存储密钥 |
-| `WEBHOOK_SECRET` | Webhook 密钥 |
-| `TMDB_API_KEY` | TMDB API 密钥 |
-| `GH_TOKEN` | GitHub Token |
 
 ### GitHub Token 配置
 
