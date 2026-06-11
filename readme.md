@@ -132,7 +132,7 @@ Fork 此项目，然后填写下面的信息。
 | `PASSWORD` | 服务器 SSH 密码（与 KEY 二选一） |
 | `KEY` | 服务器 SSH 私钥（与 PASSWORD 二选一） |
 | `PORT` | 服务器 SSH 端口 |
-| `PUSHPLUS_TOKEN` | （可选）PushPlus 推送通知 Token |
+| `PUSHPLUS_TOKEN` | （可选）PushPlus 推送通知 Token。未设置时自动跳过推送 |
 | `BASE_URL` | 站点对外根 URL |
 | `NEXT_PUBLIC_API_URL` | 公开 API URL |
 | `NEXT_PUBLIC_GATEWAY_URL` | 公开网关 URL |
@@ -144,6 +144,43 @@ Fork 此项目，然后填写下面的信息。
 2. 进入 [tokens](https://github.com/settings/tokens) - Personal access tokens - Tokens (classic) - Generate new token - Generate new token (classic)
 
 ![](https://github.com/innei-dev/yohaku-deploy-action/assets/41265413/e55d32cb-bd30-46b7-a603-7d00b3f8a413)
+
+### PushPlus 推送通知
+
+设置了 `PUSHPLUS_TOKEN` 后，每次部署完成会通过 PushPlus 推送通知到微信，包含部署状态、版本号、各阶段耗时等。Token 为空时自动跳过，不影响部署流程。
+
+<details>
+<summary>推送示例（点击展开）</summary>
+
+```
+## Yohaku 部署 ✅ 成功
+
+### 基本信息
+| 项目 | 内容 |
+|------|------|
+| 状态 | ✅ 成功 |
+| 版本 | `abc1234` |
+| 触发方式 | 代码推送 |
+| 运行编号 | #42 |
+| 部署方式 | docker |
+| 总用时 | 5m 23s |
+| 时间 | 2026-06-12 14:30:00 |
+
+### 各阶段结果
+| 阶段 | 结果 | 用时 |
+|------|------|------|
+| Docker 构建 | ✅ success | 3m 15s |
+| 镜像打包 | ✅ success（192MB） | 0m 30s |
+| 传输到服务器 | ✅ success | 1m 20s |
+| 部署启动 | ✅ success | 0m 18s |
+
+### 提交信息
+> feat: add new theme support
+
+[查看 GitHub Actions 运行详情](https://github.com/sysfox/yohaku-deploy-action/actions/runs/123456789)
+```
+
+</details>
 
 ## Docker 部署流程
 
