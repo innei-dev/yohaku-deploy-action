@@ -85,6 +85,10 @@ jobs:
       deploy_result: ${{ steps.deploy.conclusion }}
       total_duration: ${{ steps.results.outputs.total_duration }}
       image_size: ${{ steps.results.outputs.image_size }}
+      build_duration: ${{ steps.results.outputs.build_duration }}
+      save_duration: ${{ steps.results.outputs.save_duration }}
+      scp_duration: ${{ steps.results.outputs.scp_duration }}
+      deploy_duration: ${{ steps.results.outputs.deploy_duration }}
 
     steps:
       - uses: actions/checkout@v4
@@ -125,6 +129,11 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Record build end
+        id: timing_build_end
+        if: always()
+        run: echo "end=$(date +%s)" >> "$GITHUB_OUTPUT"
+
       - name: Store short SHA
         id: sha
         run: |
@@ -136,6 +145,11 @@ jobs:
         run: |
           mkdir -p deploy
           docker save yohaku:latest | gzip > deploy/yohaku-image.tar.gz
+
+      - name: Record save end
+        id: timing_save_end
+        if: always()
+        run: echo "end=$(date +%s)" >> "$GITHUB_OUTPUT"
 
       - name: Copy image to server
         id: scp
@@ -150,6 +164,11 @@ jobs:
           target: /tmp/yohaku-deploy
           strip_components: 1
           timeout: 10m
+
+      - name: Record scp end
+        id: timing_scp_end
+        if: always()
+        run: echo "end=$(date +%s)" >> "$GITHUB_OUTPUT"
 
       - name: Deploy on server
         id: deploy
@@ -190,6 +209,11 @@ jobs:
             echo "Deployed yohaku:${{ github.sha }}"
             docker ps --filter name=yohaku --format "{{.Status}}"
 
+      - name: Record deploy end
+        id: timing_deploy_end
+        if: always()
+        run: echo "end=$(date +%s)" >> "$GITHUB_OUTPUT"
+
       - name: Compile results
         id: results
         if: always()
@@ -199,6 +223,25 @@ jobs:
           echo "total_duration=$((now - start))" >> "$GITHUB_OUTPUT"
           if [ -f deploy/yohaku-image.tar.gz ]; then
             echo "image_size=$(du -h deploy/yohaku-image.tar.gz | cut -f1)" >> "$GITHUB_OUTPUT"
+          fi
+
+          # Phase durations (seconds, from consecutive timing points)
+          build_end='${{ steps.timing_build_end.outputs.end }}'
+          save_end='${{ steps.timing_save_end.outputs.end }}'
+          scp_end='${{ steps.timing_scp_end.outputs.end }}'
+          deploy_end='${{ steps.timing_deploy_end.outputs.end }}'
+
+          if [ -n "$build_end" ]; then
+            echo "build_duration=$((build_end - start))" >> "$GITHUB_OUTPUT"
+          fi
+          if [ -n "$build_end" ] && [ -n "$save_end" ]; then
+            echo "save_duration=$((save_end - build_end))" >> "$GITHUB_OUTPUT"
+          fi
+          if [ -n "$save_end" ] && [ -n "$scp_end" ]; then
+            echo "scp_duration=$((scp_end - save_end))" >> "$GITHUB_OUTPUT"
+          fi
+          if [ -n "$scp_end" ] && [ -n "$deploy_end" ]; then
+            echo "deploy_duration=$((deploy_end - scp_end))" >> "$GITHUB_OUTPUT"
           fi
 
       - name: After deploy script
@@ -264,6 +307,10 @@ jobs:
           DEPLOY_PHASE_RESULT: ${{ needs.build-and-deploy.outputs.deploy_result }}
           TOTAL_DURATION: ${{ needs.build-and-deploy.outputs.total_duration }}
           IMAGE_SIZE: ${{ needs.build-and-deploy.outputs.image_size }}
+          BUILD_DURATION: ${{ needs.build-and-deploy.outputs.build_duration }}
+          SAVE_DURATION: ${{ needs.build-and-deploy.outputs.save_duration }}
+          SCP_DURATION: ${{ needs.build-and-deploy.outputs.scp_duration }}
+          DEPLOY_PHASE_DURATION: ${{ needs.build-and-deploy.outputs.deploy_duration }}
           TRIGGER_EVENT: ${{ github.event_name }}
           RUN_NUMBER: ${{ github.run_number }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -315,6 +362,22 @@ jobs:
             DURATION_TEXT="N/A"
           fi
 
+          # --- Phase durations ---
+          format_duration() {
+            if [ -z "$1" ] || [ "$1" = "N/A" ]; then
+              echo "N/A"
+            else
+              m=$(( $1 / 60 ))
+              s=$(( $1 % 60 ))
+              echo "${m}m ${s}s"
+            fi
+          }
+
+          BUILD_DURATION_TEXT=$(format_duration "$BUILD_DURATION")
+          SAVE_DURATION_TEXT=$(format_duration "$SAVE_DURATION")
+          SCP_DURATION_TEXT=$(format_duration "$SCP_DURATION")
+          DEPLOY_DURATION_TEXT=$(format_duration "$DEPLOY_PHASE_DURATION")
+
           # --- Commit message ---
           COMMIT_MSG=$(cat /tmp/commit_msg.txt 2>/dev/null || echo "N/A")
 
@@ -335,12 +398,12 @@ jobs:
           | 时间 | ${TIMESTAMP} |
 
           ### 各阶段结果
-          | 阶段 | 结果 |
-          |------|------|
-          | Docker 构建 | ${BUILD_ICON} ${BUILD_RESULT} |
-          | 镜像打包 | ${SAVE_ICON} ${SAVE_RESULT} ${SIZE_HINT} |
-          | 传输到服务器 | ${SCP_ICON} ${SCP_RESULT} |
-          | 部署启动 | ${DEPLOY_ICON} ${DEPLOY_PHASE_RESULT} |
+          | 阶段 | 结果 | 用时 |
+          |------|------|------|
+          | Docker 构建 | ${BUILD_ICON} ${BUILD_RESULT} | ${BUILD_DURATION_TEXT} |
+          | 镜像打包 | ${SAVE_ICON} ${SAVE_RESULT} ${SIZE_HINT} | ${SAVE_DURATION_TEXT} |
+          | 传输到服务器 | ${SCP_ICON} ${SCP_RESULT} | ${SCP_DURATION_TEXT} |
+          | 部署启动 | ${DEPLOY_ICON} ${DEPLOY_PHASE_RESULT} | ${DEPLOY_DURATION_TEXT} |
 
           ### 提交信息
           > ${COMMIT_MSG}
