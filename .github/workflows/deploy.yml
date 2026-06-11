@@ -6,6 +6,7 @@ on:
       - main
   schedule:
     - cron: '0 0 * * 3,5'
+  workflow_dispatch:
   repository_dispatch:
     types: [trigger-workflow]
 
@@ -300,7 +301,8 @@ jobs:
           case "$TRIGGER_EVENT" in
             push)                TRIGGER_TEXT="代码推送" ;;
             schedule)            TRIGGER_TEXT="定时触发" ;;
-            repository_dispatch) TRIGGER_TEXT="手动触发" ;;
+            workflow_dispatch)   TRIGGER_TEXT="手动运行" ;;
+            repository_dispatch) TRIGGER_TEXT="外部触发" ;;
             *)                   TRIGGER_TEXT="$TRIGGER_EVENT" ;;
           esac
 
