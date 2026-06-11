@@ -6,9 +6,21 @@
 
 ## Why?
 
-- [Yohaku](https://github.com/Innei/Yohaku) 是当前闭源完整实现。
-- Next.js build 需要大量内存，很多服务器并吃不消这样的开销，因此利用 GitHub Action 完成构建后推送到服务器。
-- 支持 **Docker** 和 **PM2** 两种部署方式，可根据服务器环境自由选择。
+这里的项目关系现在更准确地说是：
+
+- [Yohaku](https://github.com/Innei/Yohaku) 是当前设计语言与视觉体系已经完全重构后的闭源完整实现。
+- [Shiro](https://github.com/Innei/Shiro) 是更早期的开源来源项目。
+- `Shiroi` 更接近 Yohaku 在大改版之前的历史阶段或兼容称呼；如果你需要旧设计风格，可以切换到 `Shiroi` 对应的历史版本。
+
+开源版本通常提供了预构建的 Docker 镜像或者编译产物可直接使用，但是当前私有完整实现并没有提供。
+
+因为 Next.js build 需要大量内存，很多服务器并吃不消这样的开销。
+
+因此这里提供利用 GitHub Action 去完成构建然后推送到服务器。
+
+你可以使用定时任务去定时更新 Yohaku，或部署旧风格的 Shiroi 历史版本。
+
+支持 **Docker** 和 **PM2** 两种部署方式，可根据服务器环境自由选择。
 
 ## 最近变更
 
