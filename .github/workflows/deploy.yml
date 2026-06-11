@@ -7,6 +7,14 @@ on:
   schedule:
     - cron: '0 0 * * 3,5'
   workflow_dispatch:
+    inputs:
+      deploy_method:
+        description: '部署方式'
+        default: 'docker'
+        type: choice
+        options:
+          - docker
+          - pm2
   repository_dispatch:
     types: [trigger-workflow]
 
@@ -20,6 +28,7 @@ concurrency:
 env:
   HASH_FILE: build_hash
   SOURCE_REPO: innei-dev/Yohaku
+  DEPLOY_METHOD: docker  # 部署方式：docker 或 pm2。手动运行时可通过下方 workflow_dispatch input 覆盖
 
 jobs:
   prepare:
@@ -80,16 +89,17 @@ jobs:
 
     outputs:
       sha_short: ${{ steps.sha.outputs.sha_short }}
-      build_result: ${{ steps.build.conclusion }}
-      save_result: ${{ steps.save.conclusion }}
-      scp_result: ${{ steps.scp.conclusion }}
-      deploy_result: ${{ steps.deploy.conclusion }}
+      build_result: ${{ steps.results.outputs.build_result }}
+      save_result: ${{ steps.results.outputs.save_result }}
+      scp_result: ${{ steps.results.outputs.scp_result }}
+      deploy_result: ${{ steps.results.outputs.deploy_result }}
       total_duration: ${{ steps.results.outputs.total_duration }}
       image_size: ${{ steps.results.outputs.image_size }}
       build_duration: ${{ steps.results.outputs.build_duration }}
       save_duration: ${{ steps.results.outputs.save_duration }}
       scp_duration: ${{ steps.results.outputs.scp_duration }}
       deploy_duration: ${{ steps.results.outputs.deploy_duration }}
+      deploy_method: ${{ steps.deploy_method.outputs.method }}
 
     steps:
       - uses: actions/checkout@v4
@@ -103,15 +113,56 @@ jobs:
       - name: Checkout LFS objects
         run: git lfs checkout
 
+      # ── Docker build ──
       - name: Set up Docker Buildx
+        if: env.DEPLOY_METHOD == 'docker'
         uses: docker/setup-buildx-action@v3
 
       - name: Start timing
         id: timing
         run: echo "start_time=$(date +%s)" >> "$GITHUB_OUTPUT"
 
+      - name: Override deploy method from workflow input
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.deploy_method != ''
+        run: echo "DEPLOY_METHOD=${{ github.event.inputs.deploy_method }}" >> $GITHUB_ENV
+
+      - name: Record deploy method
+        id: deploy_method
+        run: echo "method=${DEPLOY_METHOD:-docker}" >> "$GITHUB_OUTPUT"
+
+      # ── PM2 build ──
+      - name: Setup Node.js
+        if: env.DEPLOY_METHOD == 'pm2'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install pnpm
+        if: env.DEPLOY_METHOD == 'pm2'
+        run: npm install -g pnpm@latest
+
+      - name: Install dependencies
+        if: env.DEPLOY_METHOD == 'pm2'
+        run: pnpm install
+
+      - name: Build standalone
+        if: env.DEPLOY_METHOD == 'pm2'
+        id: build_pm2
+        run: |
+          pnpm --filter @yohaku/web build:ci
+          mkdir -p deploy
+          cd apps/web/.next
+          rm -rf cache
+          cp -r ../public ./standalone/public
+          mv ./static ./standalone/apps/web/.next/static
+          cd ./standalone
+          echo ';process.title = "Yohaku (NextJS)"' >> server.js
+          cd ../..
+          zip --symlinks -r ${{ github.workspace }}/deploy/release.zip ./*
+
       - name: Build Docker image
-        id: build
+        if: env.DEPLOY_METHOD == 'docker'
+        id: build_docker
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -141,7 +192,8 @@ jobs:
           sha_short=$(git rev-parse --short HEAD)
           echo "sha_short=$sha_short" >> "$GITHUB_OUTPUT"
 
-      - name: Save image
+      - name: Save image (Docker)
+        if: env.DEPLOY_METHOD == 'docker'
         id: save
         run: |
           mkdir -p deploy
@@ -152,8 +204,9 @@ jobs:
         if: always()
         run: echo "end=$(date +%s)" >> "$GITHUB_OUTPUT"
 
-      - name: Copy image to server
-        id: scp
+      - name: Copy image to server (Docker)
+        if: env.DEPLOY_METHOD == 'docker'
+        id: scp_docker
         uses: appleboy/scp-action@master
         with:
           host: ${{ secrets.HOST }}
@@ -171,8 +224,10 @@ jobs:
         if: always()
         run: echo "end=$(date +%s)" >> "$GITHUB_OUTPUT"
 
-      - name: Deploy on server
-        id: deploy
+      # ── Docker deploy ──
+      - name: Deploy via Docker on server
+        if: env.DEPLOY_METHOD == 'docker'
+        id: deploy_docker
         uses: appleboy/ssh-action@master
         with:
           command_timeout: 5m
@@ -189,12 +244,14 @@ jobs:
             docker stop yohaku 2>/dev/null || true
             docker rm yohaku 2>/dev/null || true
 
+            # Source /app/.env so API_URL etc. are available at runtime
             docker run -d \
               --name yohaku \
               --restart always \
               -p 2323:2323 \
               -v $HOME/yohaku/.env:/app/.env \
-              yohaku:latest
+              yohaku:latest \
+              sh -c "set -a; . /app/.env 2>/dev/null || true; set +a; echo 'Mix Space Web [Yohaku] Image.' && node apps/web/server.js"
 
             # Retain image for rollback
             mkdir -p $HOME/yohaku/images
@@ -210,6 +267,58 @@ jobs:
             echo "Deployed yohaku:${{ github.sha }}"
             docker ps --filter name=yohaku --format "{{.Status}}"
 
+      # ── PM2 deploy ──
+      - name: Copy standalone to server (PM2)
+        if: env.DEPLOY_METHOD == 'pm2'
+        id: scp_pm2
+        uses: appleboy/scp-action@master
+        with:
+          host: ${{ secrets.HOST }}
+          username: ${{ secrets.USER }}
+          password: ${{ secrets.PASSWORD }}
+          key: ${{ secrets.KEY }}
+          port: ${{ secrets.PORT }}
+          source: deploy/release.zip
+          target: /tmp/yohaku-deploy
+          strip_components: 1
+          timeout: 10m
+
+      - name: Deploy via PM2 on server
+        if: env.DEPLOY_METHOD == 'pm2'
+        id: deploy_pm2
+        uses: appleboy/ssh-action@master
+        with:
+          command_timeout: 5m
+          host: ${{ secrets.HOST }}
+          username: ${{ secrets.USER }}
+          password: ${{ secrets.PASSWORD }}
+          key: ${{ secrets.KEY }}
+          port: ${{ secrets.PORT }}
+          script: |
+            set -e
+
+            DEPLOY_DIR=$HOME/yohaku
+            mkdir -p "$DEPLOY_DIR/standalone"
+
+            # Unzip release
+            unzip -o /tmp/yohaku-deploy/release.zip -d "$DEPLOY_DIR/standalone"
+
+            # Copy pm2 ecosystem config
+            cp "$DEPLOY_DIR/ecosystem.config.js" "$DEPLOY_DIR/standalone/ecosystem.config.js" 2>/dev/null || true
+
+            # Install sharp if missing
+            cd "$DEPLOY_DIR/standalone"
+            npm install sharp 2>/dev/null || true
+
+            # Restart via pm2
+            pm2 restart "$DEPLOY_DIR/standalone/ecosystem.config.js" 2>/dev/null || \
+              pm2 start "$DEPLOY_DIR/standalone/ecosystem.config.js"
+
+            pm2 save
+
+            echo "Deployed yohaku:${{ github.sha }} via PM2"
+            pm2 list --no-color | head -5
+
       - name: Record deploy end
         id: timing_deploy_end
         if: always()
@@ -224,6 +333,20 @@ jobs:
           echo "total_duration=$((now - start))" >> "$GITHUB_OUTPUT"
           if [ -f deploy/yohaku-image.tar.gz ]; then
             echo "image_size=$(du -h deploy/yohaku-image.tar.gz | cut -f1)" >> "$GITHUB_OUTPUT"
+          fi
+
+          # Step results based on deploy method
+          DEPLOY_METHOD="${{ env.DEPLOY_METHOD }}"
+          if [ "$DEPLOY_METHOD" = "pm2" ]; then
+            echo "build_result=${{ steps.build_pm2.conclusion }}" >> "$GITHUB_OUTPUT"
+            echo "scp_result=${{ steps.scp_pm2.conclusion }}" >> "$GITHUB_OUTPUT"
+            echo "deploy_result=${{ steps.deploy_pm2.conclusion }}" >> "$GITHUB_OUTPUT"
+            echo "save_result=skipped" >> "$GITHUB_OUTPUT"
+          else
+            echo "build_result=${{ steps.build_docker.conclusion }}" >> "$GITHUB_OUTPUT"
+            echo "save_result=${{ steps.save.conclusion }}" >> "$GITHUB_OUTPUT"
+            echo "scp_result=${{ steps.scp_docker.conclusion }}" >> "$GITHUB_OUTPUT"
+            echo "deploy_result=${{ steps.deploy_docker.conclusion }}" >> "$GITHUB_OUTPUT"
           fi
 
           # Phase durations (seconds, from consecutive timing points)
@@ -312,6 +435,7 @@ jobs:
         env:
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
           DEPLOY_RESULT: ${{ needs.build-and-deploy.result }}
+          DEPLOY_METHOD: ${{ needs.build-and-deploy.outputs.deploy_method }}
           SHA_SHORT: ${{ steps.commit.outputs.sha_short }}
           BUILD_RESULT: ${{ needs.build-and-deploy.outputs.build_result }}
           SAVE_RESULT: ${{ needs.build-and-deploy.outputs.save_result }}
@@ -393,6 +517,19 @@ jobs:
           # --- Commit message ---
           COMMIT_MSG=$(cat /tmp/commit_msg.txt 2>/dev/null || echo "N/A")
 
+          # --- Build phase rows ---
+          if [ "$DEPLOY_METHOD" = "pm2" ]; then
+            PHASE_ROWS="\
+          | 构建 | ${BUILD_ICON} ${BUILD_RESULT} | ${BUILD_DURATION_TEXT} |
+          | 部署启动 | ${DEPLOY_ICON} ${DEPLOY_PHASE_RESULT} | ${DEPLOY_PHASE_DURATION} |"
+          else
+            PHASE_ROWS="\
+          | Docker 构建 | ${BUILD_ICON} ${BUILD_RESULT} | ${BUILD_DURATION_TEXT} |
+          | 镜像打包 | ${SAVE_ICON} ${SAVE_RESULT} ${SIZE_HINT} | ${SAVE_DURATION_TEXT} |
+          | 传输到服务器 | ${SCP_ICON} ${SCP_RESULT} | ${SCP_DURATION_TEXT} |
+          | 部署启动 | ${DEPLOY_ICON} ${DEPLOY_PHASE_RESULT} | ${DEPLOY_DURATION_TEXT} |"
+          fi
+
           # --- Build content ---
           TIMESTAMP=$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')
           SIZE_HINT="${IMAGE_SIZE:+（${IMAGE_SIZE}）}"
@@ -406,16 +543,14 @@ jobs:
           | 版本 | \`${SHA_SHORT}\` |
           | 触发方式 | ${TRIGGER_TEXT} |
           | 运行编号 | #${RUN_NUMBER} |
+          | 部署方式 | ${DEPLOY_METHOD} |
           | 总用时 | ${DURATION_TEXT} |
           | 时间 | ${TIMESTAMP} |
 
           ### 各阶段结果
           | 阶段 | 结果 | 用时 |
           |------|------|------|
-          | Docker 构建 | ${BUILD_ICON} ${BUILD_RESULT} | ${BUILD_DURATION_TEXT} |
-          | 镜像打包 | ${SAVE_ICON} ${SAVE_RESULT} ${SIZE_HINT} | ${SAVE_DURATION_TEXT} |
-          | 传输到服务器 | ${SCP_ICON} ${SCP_RESULT} | ${SCP_DURATION_TEXT} |
-          | 部署启动 | ${DEPLOY_ICON} ${DEPLOY_PHASE_RESULT} | ${DEPLOY_DURATION_TEXT} |
+          ${PHASE_ROWS}
 
           ### 提交信息
           > ${COMMIT_MSG}

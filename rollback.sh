@@ -51,7 +51,8 @@ docker run -d \
   --restart always \
   -p 2323:2323 \
   -v "$HOME/yohaku/.env:/app/.env" \
-  yohaku:latest
+  yohaku:latest \
+  sh -c "set -a; . /app/.env 2>/dev/null || true; set +a; echo 'Mix Space Web [Yohaku] Image.' && node apps/web/server.js"
 
 echo "回滚完成，当前运行: yohaku:$TAG"
 docker ps --filter name=yohaku --format "table {{.Names}}\t{{.Image}}\t{{.Status}}"
