@@ -102,6 +102,9 @@ jobs:
       deploy_method: ${{ steps.deploy_method.outputs.method }}
 
     steps:
+      # ═══════════════════════════════════════════
+      # Common Setup
+      # ═══════════════════════════════════════════
       - uses: actions/checkout@v4
         with:
           repository: ${{ env.SOURCE_REPO }}
@@ -112,11 +115,6 @@ jobs:
 
       - name: Checkout LFS objects
         run: git lfs checkout
-
-      # ── Docker build ──
-      - name: Set up Docker Buildx
-        if: env.DEPLOY_METHOD == 'docker'
-        uses: docker/setup-buildx-action@v3
 
       - name: Start timing
         id: timing
@@ -130,35 +128,18 @@ jobs:
         id: deploy_method
         run: echo "method=${DEPLOY_METHOD:-docker}" >> "$GITHUB_OUTPUT"
 
-      # ── PM2 build ──
-      - name: Setup Node.js
-        if: env.DEPLOY_METHOD == 'pm2'
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: Install pnpm
-        if: env.DEPLOY_METHOD == 'pm2'
-        run: npm install -g pnpm@latest
-
-      - name: Install dependencies
-        if: env.DEPLOY_METHOD == 'pm2'
-        run: pnpm install
-
-      - name: Build standalone
-        if: env.DEPLOY_METHOD == 'pm2'
-        id: build_pm2
+      - name: Store short SHA
+        id: sha
         run: |
-          pnpm --filter @yohaku/web build:ci
-          mkdir -p deploy
-          cd apps/web/.next
-          rm -rf cache
-          cp -r ../public ./standalone/public
-          mv ./static ./standalone/apps/web/.next/static
-          cd ./standalone
-          echo ';process.title = "Yohaku (NextJS)"' >> server.js
-          cd ../..
-          zip --symlinks -r ${{ github.workspace }}/deploy/release.zip ./*
+          sha_short=$(git rev-parse --short HEAD)
+          echo "sha_short=$sha_short" >> "$GITHUB_OUTPUT"
+
+      # ═══════════════════════════════════════════
+      # Docker Path
+      # ═══════════════════════════════════════════
+      - name: Set up Docker Buildx
+        if: env.DEPLOY_METHOD == 'docker'
+        uses: docker/setup-buildx-action@v3
 
       - name: Build Docker image
         if: env.DEPLOY_METHOD == 'docker'
@@ -181,16 +162,10 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Record build end
+      - name: Record build end (Docker)
+        if: env.DEPLOY_METHOD == 'docker'
         id: timing_build_end
-        if: always()
         run: echo "end=$(date +%s)" >> "$GITHUB_OUTPUT"
-
-      - name: Store short SHA
-        id: sha
-        run: |
-          sha_short=$(git rev-parse --short HEAD)
-          echo "sha_short=$sha_short" >> "$GITHUB_OUTPUT"
 
       - name: Save image (Docker)
         if: env.DEPLOY_METHOD == 'docker'
@@ -199,9 +174,9 @@ jobs:
           mkdir -p deploy
           docker save yohaku:latest | gzip > deploy/yohaku-image.tar.gz
 
-      - name: Record save end
+      - name: Record save end (Docker)
+        if: env.DEPLOY_METHOD == 'docker'
         id: timing_save_end
-        if: always()
         run: echo "end=$(date +%s)" >> "$GITHUB_OUTPUT"
 
       - name: Copy image to server (Docker)
@@ -219,12 +194,11 @@ jobs:
           strip_components: 1
           timeout: 10m
 
-      - name: Record scp end
+      - name: Record scp end (Docker)
+        if: env.DEPLOY_METHOD == 'docker'
         id: timing_scp_end
-        if: always()
         run: echo "end=$(date +%s)" >> "$GITHUB_OUTPUT"
 
-      # ── Docker deploy ──
       - name: Deploy via Docker on server
         if: env.DEPLOY_METHOD == 'docker'
         id: deploy_docker
@@ -267,7 +241,53 @@ jobs:
             echo "Deployed yohaku:${{ github.sha }}"
             docker ps --filter name=yohaku --format "{{.Status}}"
 
-      # ── PM2 deploy ──
+      - name: Record deploy end (Docker)
+        if: env.DEPLOY_METHOD == 'docker'
+        id: timing_deploy_end
+        run: echo "end=$(date +%s)" >> "$GITHUB_OUTPUT"
+
+      # ═══════════════════════════════════════════
+      # PM2 Path
+      # ═══════════════════════════════════════════
+      - name: Setup Node.js
+        if: env.DEPLOY_METHOD == 'pm2'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install pnpm
+        if: env.DEPLOY_METHOD == 'pm2'
+        run: npm install -g pnpm@latest
+
+      - name: Install dependencies
+        if: env.DEPLOY_METHOD == 'pm2'
+        run: pnpm install
+
+      - name: Build standalone
+        if: env.DEPLOY_METHOD == 'pm2'
+        id: build_pm2
+        run: |
+          pnpm --filter @yohaku/web build:ci
+          mkdir -p deploy
+          cd apps/web/.next
+          rm -rf cache
+          cp -r ../public ./standalone/public
+          mv ./static ./standalone/apps/web/.next/static
+          cd ./standalone
+          echo ';process.title = "Yohaku (NextJS)"' >> server.js
+          cd ../..
+          zip --symlinks -r ${{ github.workspace }}/deploy/release.zip ./*
+
+      - name: Record build end (PM2)
+        if: env.DEPLOY_METHOD == 'pm2'
+        id: timing_build_end_pm2
+        run: echo "end=$(date +%s)" >> "$GITHUB_OUTPUT"
+
+      - name: Record save end (PM2, no save phase)
+        if: env.DEPLOY_METHOD == 'pm2'
+        id: timing_save_end_pm2
+        run: echo "end=$(date +%s)" >> "$GITHUB_OUTPUT"
+
       - name: Copy standalone to server (PM2)
         if: env.DEPLOY_METHOD == 'pm2'
         id: scp_pm2
@@ -282,6 +302,11 @@ jobs:
           target: /tmp/yohaku-deploy
           strip_components: 1
           timeout: 10m
+
+      - name: Record scp end (PM2)
+        if: env.DEPLOY_METHOD == 'pm2'
+        id: timing_scp_end_pm2
+        run: echo "end=$(date +%s)" >> "$GITHUB_OUTPUT"
 
       - name: Deploy via PM2 on server
         if: env.DEPLOY_METHOD == 'pm2'
@@ -319,11 +344,14 @@ jobs:
             echo "Deployed yohaku:${{ github.sha }} via PM2"
             pm2 list --no-color | head -5
 
-      - name: Record deploy end
-        id: timing_deploy_end
-        if: always()
+      - name: Record deploy end (PM2)
+        if: env.DEPLOY_METHOD == 'pm2'
+        id: timing_deploy_end_pm2
         run: echo "end=$(date +%s)" >> "$GITHUB_OUTPUT"
 
+      # ═══════════════════════════════════════════
+      # Common Finish
+      # ═══════════════════════════════════════════
       - name: Compile results
         id: results
         if: always()
@@ -349,11 +377,18 @@ jobs:
             echo "deploy_result=${{ steps.deploy_docker.conclusion }}" >> "$GITHUB_OUTPUT"
           fi
 
-          # Phase durations (seconds, from consecutive timing points)
-          build_end='${{ steps.timing_build_end.outputs.end }}'
-          save_end='${{ steps.timing_save_end.outputs.end }}'
-          scp_end='${{ steps.timing_scp_end.outputs.end }}'
-          deploy_end='${{ steps.timing_deploy_end.outputs.end }}'
+          # Phase durations based on deploy method
+          if [ "$DEPLOY_METHOD" = "pm2" ]; then
+            build_end='${{ steps.timing_build_end_pm2.outputs.end }}'
+            save_end='${{ steps.timing_save_end_pm2.outputs.end }}'
+            scp_end='${{ steps.timing_scp_end_pm2.outputs.end }}'
+            deploy_end='${{ steps.timing_deploy_end_pm2.outputs.end }}'
+          else
+            build_end='${{ steps.timing_build_end.outputs.end }}'
+            save_end='${{ steps.timing_save_end.outputs.end }}'
+            scp_end='${{ steps.timing_scp_end.outputs.end }}'
+            deploy_end='${{ steps.timing_deploy_end.outputs.end }}'
+          fi
 
           if [ -n "$build_end" ]; then
             echo "build_duration=$((build_end - start))" >> "$GITHUB_OUTPUT"
