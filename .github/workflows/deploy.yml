@@ -1,5 +1,4 @@
 name: Build and Deploy
-
 on:
   push:
     branches:
@@ -91,7 +90,7 @@ jobs:
           lfs: true
           submodules: recursive
 
-      - name: Checkout LFS objects
+      - name: Checkout LFS objects1
         run: git lfs checkout
       - uses: pnpm/action-setup@v2
 
@@ -147,6 +146,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
       # - name: Download artifact
       #   uses: actions/download-artifact@v4
       #   with:
