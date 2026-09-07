@@ -4,11 +4,13 @@ on:
   push:
     branches:
       - main
-  # schedule:
-  #   - cron: '0 3 * * *'
+  schedule:
+      - cron: '0 3 * * *'
 
   repository_dispatch:
     types: [trigger-workflow]
+  workflow_dispatch:
+
 
 permissions: write-all
 concurrency:
@@ -112,7 +114,13 @@ jobs:
           ${{ env.BUILD_COMMAND }}
           cd apps/web/.next
           rm -rf cache
+
+          # 修复字体404
+          rm -rf ./standalone/public
+          rm -rf ./standalone/apps/web/public
           cp -r ../public ./standalone/public
+          cp -r ../public ./standalone/apps/web/public
+
           mv ./static ./standalone/apps/web/.next/static
           cd ./standalone
           echo ';process.title = "Yohaku (NextJS)"' >> server.js
@@ -151,6 +159,12 @@ jobs:
       #   uses: actions/download-artifact@v4
       #   with:
       #     name: dist
+      - name: Checkout only pm2 config
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            pm2
+          sparse-checkout-cone-mode: false
 
       - name: Restore cached Build Artifacts
         id: cache-primes-restore
@@ -163,7 +177,7 @@ jobs:
         run: mv assets/release.zip release.zip
 
       - name: Prepare standalone PM2 config
-        run: cp pm2/ecosystem.config.js ecosystem.config.js
+        run: cp ./pm2/ecosystem.config.js ecosystem.config.js
 
       - name: copy file via ssh password
         uses: appleboy/scp-action@v0.1.7
@@ -200,6 +214,12 @@ jobs:
           script: |
             set -e
             source $HOME/.bashrc
+
+            # 修复找不到 pm2 的问题
+            export NVM_DIR="$HOME/.nvm"
+            [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+            nvm use --lts
+            
             basedir=$HOME/yohaku
             workdir=$basedir/${{ github.run_number }}
             mkdir -p $workdir
@@ -215,6 +235,10 @@ jobs:
             # https://github.com/Unitech/pm2/issues/3054
             # symlink workdir node entry file to basedir
             ln -sf $workdir/${{ env.STANDALONE_SUBPATH }}/server.js $basedir/server.js
+            
+            # 修复字体加载的404
+            ln -sfn $workdir/${{ env.STANDALONE_SUBPATH }}/public $basedir/public
+            
             mkdir -p $workdir/${{ env.STANDALONE_SUBPATH }}/.next
             rm -rf $workdir/${{ env.STANDALONE_SUBPATH }}/.next/cache
             ln -sf $basedir/.cache $workdir/${{ env.STANDALONE_SUBPATH }}/.next/cache
